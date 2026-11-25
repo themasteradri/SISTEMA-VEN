@@ -1,91 +1,132 @@
-import initSqlJs from 'sql.js'
-import wasmUrl from 'sql.js/dist/sql-wasm.wasm?url'
-
-const queries = {
-  companies: 'SELECT id, nombre FROM empresas_empresa ORDER BY nombre',
-  products: `SELECT p.id, p.nombre, p.codigo_barras, p.stock_actual, p.stock_minimo,
-    p.precio_venta, p.costo_promedio, p.lead_time_dias, p.empresa_id, p.es_simulado,
-    p.activo, c.nombre AS categoria FROM inventario_producto p
-    LEFT JOIN inventario_categoria c ON c.id = p.categoria_id ORDER BY p.nombre`,
-  sales: `SELECT id, numero_ticket, fecha, total, metodo_pago, empresa_id, es_simulado
-    FROM operaciones_venta ORDER BY fecha DESC, id DESC`,
-  lines: `SELECT d.id, d.venta_id, d.producto_id, d.cantidad, d.precio_unitario,
-    p.nombre AS producto FROM operaciones_detalleventa d
-    LEFT JOIN inventario_producto p ON p.id = d.producto_id ORDER BY d.id`,
-  movements: `SELECT k.id, k.producto_id, k.venta_id, k.fecha, k.tipo_movimiento, k.cantidad,
-    k.costo_unitario, k.stock_resultante, k.empresa_id, k.es_simulado,
-    p.nombre AS producto, v.numero_ticket FROM operaciones_kardex k
-    LEFT JOIN inventario_producto p ON p.id = k.producto_id
-    LEFT JOIN operaciones_venta v ON v.id = k.venta_id ORDER BY k.fecha DESC, k.id DESC`,
-  expenses: 'SELECT id, descripcion, categoria, monto, fecha, empresa_id FROM finanzas_gastooperativo ORDER BY fecha DESC',
-}
-
-export async function importSQLite(file) {
-  const SQL = await initSqlJs({ locateFile: () => wasmUrl })
-  const db = new SQL.Database(new Uint8Array(await file.arrayBuffer()))
-  try {
-    return Object.fromEntries(Object.entries(queries).map(([key, query]) => {
-      const result = db.exec(query)[0]
-      return [key, result?.values.map(values =>
-        Object.fromEntries(result.columns.map((column, index) => [column, values[index]]))) ?? []]
-    }))
-  } finally {
-    db.close()
-  }
-}
-
 const currency = new Intl.NumberFormat('es-PE', { style: 'currency', currency: 'PEN' })
 const reportingDate = new Intl.DateTimeFormat('sv-SE', { timeZone: 'America/Lima' })
+const reportingTime = new Intl.DateTimeFormat('sv-SE', { timeZone: 'America/Lima', hour: '2-digit', minute: '2-digit' })
 const displayDate = new Intl.DateTimeFormat('es-PE', { dateStyle: 'medium', timeZone: 'America/Lima' })
 const chartDate = new Intl.DateTimeFormat('es-PE', { weekday: 'short', day: 'numeric', timeZone: 'UTC' })
 const dayMs = 86_400_000
 
 function fromSQLite(value) {
-  return new Date(value.length === 10 ? value + 'T12:00:00Z' : value.replace(' ', 'T') + 'Z')
+  if (value.length === 10) return new Date(value + 'T12:00:00Z')
+  const timestamp = value.replace(' ', 'T')
+  return new Date(/(?:Z|[+-]\d{2}:\d{2})$/i.test(timestamp) ? timestamp : timestamp + 'Z')
 }
 
 export const money = value => currency.format(Number(value || 0))
 export const dayKey = value => value ? reportingDate.format(fromSQLite(value)) : ''
+export const limaToday = () => reportingDate.format()
 export const dateLabel = value => value ? displayDate.format(fromSQLite(value)) : '—'
 export const sum = (rows, field) => rows.reduce((total, row) => total + Number(row[field] || 0), 0)
 
-export function sevenDays(sales) {
-  const end = dayKey(sales[0]?.fecha) || reportingDate.format()
-  const lastDate = new Date(end + 'T00:00:00Z')
-  return Array.from({ length: 7 }, (_, index) => {
-    const date = new Date(lastDate.getTime() - (6 - index) * dayMs)
-    const key = date.toISOString().slice(0, 10)
-    return { key, label: chartDate.format(date), value: sum(sales.filter(sale => dayKey(sale.fecha) === key), 'total') }
+export function shiftDay(day, offset) {
+  return new Date(Date.parse(day) + offset * dayMs).toISOString().slice(0, 10)
+}
+
+export function recordsInRange(records, start, end) {
+  if (!start && !end) return records
+  return records.filter(record => {
+    const day = dayKey(record.fecha)
+    return day && (!start || day >= start) && (!end || day <= end)
   })
 }
 
-export function forecast(products, sales, lines, movements) {
+function validDay(day) {
+  return /^\d{4}-\d{2}-\d{2}$/.test(day) && Number.isFinite(Date.parse(day)) && shiftDay(day, 0) === day
+}
+
+export function salesReport(sales, { range, start, end, month, today = limaToday() }) {
+  let firstDay = today
+  let lastDay = today
+  if (range === 'semana') firstDay = shiftDay(today, -6)
+  if (range === 'mes') firstDay = today.slice(0, 7) + '-01'
+  if (range === 'personalizado') {
+    if (!validDay(start) || !validDay(end)) throw new Error('Ingresa dos fechas válidas para el rango personalizado.')
+    firstDay = start <= end ? start : end
+    lastDay = start <= end ? end : start
+  }
+  if (range === 'periodo' && month) {
+    firstDay = month + '-01'
+    const [year, monthNumber] = month.split('-').map(Number)
+    lastDay = new Date(Date.UTC(year, monthNumber, 0)).toISOString().slice(0, 10)
+  }
+  const inRange = range === 'historial' ? sales : recordsInRange(sales, firstDay, lastDay)
+  return [...inRange].sort((first, second) => fromSQLite(first.fecha) - fromSQLite(second.fecha))
+}
+
+export function salesCsv(sales) {
+  const escape = value => {
+    const text = String(value ?? '')
+    return '"' + (/^\s*[=+@-]|^[\t\r\n]/.test(text) ? "'" : '') + text.replaceAll('"', '""') + '"'
+  }
+  const payment = { EFECTIVO: 'Efectivo', DIGITAL: 'Digital', TARJETA: 'Tarjeta' }
+  const rows = sales.map(sale => {
+    const date = fromSQLite(sale.fecha)
+    return [sale.numero_ticket, `${reportingDate.format(date)} ${reportingTime.format(date)}`, payment[sale.metodo_pago] || sale.metodo_pago, Number(sale.total).toFixed(2)]
+  })
+  return '\ufeffsep=;\r\n' + [['Numero Ticket', 'Fecha', 'Metodo Pago', 'Total (S/.)'], ...rows]
+    .map(row => row.map(escape).join(';')).join('\r\n') + '\r\n'
+}
+
+export function dailyIncome(sales, start, days) {
+  const dailyTotals = new Map()
+  for (const sale of sales) {
+    const day = dayKey(sale.fecha)
+    dailyTotals.set(day, (dailyTotals.get(day) || 0) + Number(sale.total))
+  }
+  const totalFor = day => dailyTotals.get(day) || 0
+  return Array.from({ length: days }, (_, index) => {
+    const key = shiftDay(start, index)
+    const value = totalFor(key)
+    const window = Math.min(index + 1, 3)
+    let windowTotal = value
+    for (let offset = 1; offset < window; offset += 1) windowTotal += totalFor(shiftDay(key, -offset))
+    return { key, label: days === 7 ? chartDate.format(new Date(key)) : key.slice(8), value, trend: windowTotal / window }
+  })
+}
+
+const noActivity = { units: 0, recent: 0, days: new Set() }
+
+export function forecast(products, sales, lines, movements, today = limaToday()) {
   const datesBySale = new Map(sales.map(sale => [sale.id, dayKey(sale.fecha)]))
-  const end = Date.parse(dayKey(sales[0]?.fecha || movements[0]?.fecha) || reportingDate.format())
-  const totalsByProduct = new Map()
-  const recordedSales = new Set()
-  function add(productId, date, quantity) {
-    const daysAgo = (end - Date.parse(date)) / dayMs
-    if (!Number.isFinite(daysAgo) || daysAgo < 0 || daysAgo >= 78) return
-    const totals = totalsByProduct.get(productId) || { long: 0, recent: 0 }
-    totals.long += quantity
-    if (daysAgo < 14) totals.recent += quantity
-    totalsByProduct.set(productId, totals)
+  const historyStart = shiftDay(today, -78)
+  const recentStart = shiftDay(today, -14)
+  const salesByProduct = new Map()
+  const movementsByProduct = new Map()
+
+  function add(collection, productId, day, quantity) {
+    if (!day || day < historyStart || day >= today) return
+    const totals = collection.get(productId) || { units: 0, recent: 0, days: new Set() }
+    totals.units += Number(quantity)
+    if (day >= recentStart) totals.recent += Number(quantity)
+    totals.days.add(day)
+    collection.set(productId, totals)
   }
   for (const line of lines) {
-    recordedSales.add(`${line.venta_id}:${line.producto_id}`)
-    add(line.producto_id, datesBySale.get(line.venta_id), Number(line.cantidad))
+    add(salesByProduct, line.producto_id, datesBySale.get(line.venta_id), line.cantidad)
   }
   for (const movement of movements) {
-    if (movement.tipo_movimiento === 'SALIDA_VENTA' && !recordedSales.has(`${movement.venta_id}:${movement.producto_id}`)) {
-      add(movement.producto_id, dayKey(movement.fecha), Math.abs(Number(movement.cantidad)))
+    if (movement.tipo_movimiento === 'SALIDA_VENTA' && datesBySale.has(movement.venta_id)) {
+      add(movementsByProduct, movement.producto_id, dayKey(movement.fecha), movement.cantidad)
     }
   }
   return products.filter(product => product.activo).map(product => {
-    const { long = 0, recent = 0 } = totalsByProduct.get(product.id) || {}
-    const daily = long / 78 * 0.4 + recent / 14 * 0.6
+    const sold = salesByProduct.get(product.id) || noActivity
+    const moved = movementsByProduct.get(product.id) || noActivity
+    const historicalUnits = Math.max(sold.units, moved.units)
+    const recentUnits = Math.max(sold.recent, moved.recent)
+    const activeDays = Math.max(sold.days.size, moved.days.size)
+    // A common denominator keeps the 40% and 60% weights exact before rounding up.
+    const weightedUnits = historicalUnits * 14 + recentUnits * 117
+    const daily = weightedUnits / 2730
     const lead = Math.max(1, Number(product.lead_time_dias || 0))
-    const target = Math.max(1, Number(product.stock_minimo)) + Math.ceil(daily * lead)
-    return { ...product, daily, lead, order: Math.max(0, target - product.stock_actual) }
-  }).sort((first, second) => second.order - first.order || second.daily - first.daily)
+    const weeklyDemand = Math.ceil(weightedUnits * 7 / 2730)
+    const leadDemand = Math.ceil(weightedUnits * lead / 2730)
+    const target = Math.max(1, Number(product.stock_minimo)) + leadDemand
+    const order = Math.max(0, target - product.stock_actual)
+    const cost = Math.round(order * Math.round(Number(product.costo_promedio) * 100)) / 100
+    const coverage = daily > 0 ? product.stock_actual / daily : product.stock_actual > 0 ? 999 : 0
+    const urgent = product.stock_actual <= target
+    const confidence = !historicalUnits ? 'Sin historial' : activeDays >= 20 ? 'Alta' : activeDays >= 8 ? 'Media' : 'Baja'
+    return { ...product, daily, lead, order, target, cost, coverage, urgent, confidence, historicalUnits,
+      activeDays, weeklyDemand, leadDemand, leadCorrected: !(product.lead_time_dias > 0), consistent: sold.units === moved.units }
+  }).sort((first, second) => Number(second.urgent) - Number(first.urgent) || first.coverage - second.coverage || second.cost - first.cost)
 }
