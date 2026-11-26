@@ -39,7 +39,11 @@ export async function snapshot(db, user, { companies, active }) {
   // snapshot only reads data and does not need a write lock.
   const results = active ? await db.batch(queries.map(([, sql]) => stmt(sql, active.id)), 'deferred') : []
   const data = Object.fromEntries(queries.map(([key], index) => [key, results[index]?.rows || []]))
-  return { ...data, companies, company: active || null, user, users: user.is_superuser ? await userList(db) : [] }
+  const users = user.is_superuser ? await userList(db) : []
+  if (user.is_superuser && (!companies.length || !users.length)) {
+    console.warn('Datos administrativos incompletos', JSON.stringify({ companies: companies.length, users: users.length, activeCompany: Boolean(active) }))
+  }
+  return { ...data, companies, company: active || null, user, users }
 }
 
 async function stockMovement(tx, { type, quantity, cost, stock, product, sale = null, company }) {
