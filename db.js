@@ -1,5 +1,6 @@
 import { resolve } from 'node:path'
-import { createClient } from '@libsql/client'
+import { createClient as createLocalClient } from '@libsql/client'
+import { createClient as createRemoteClient } from '@tursodatabase/serverless/compat'
 
 let database
 export async function getDatabase() {
@@ -18,12 +19,16 @@ function inDatabasePhase(phase, error) {
 async function connect() {
   const remoteUrl = process.env.TURSO_DATABASE_URL
   const token = process.env.TURSO_AUTH_TOKEN
-  if (remoteUrl && (!/^(libsql|https):\/\//.test(remoteUrl) || !token)) {
+  if (remoteUrl && (!/^(libsql|https|turso):\/\//.test(remoteUrl) || !token)) {
     throw new Error('Configura una URL remota de Turso y su token.')
   }
   if (process.env.VERCEL && !remoteUrl) throw new Error('Falta configurar Turso.')
   const path = resolve(process.env.LOCAL_DB_PATH || 'control.local.sqlite3').replaceAll('\\', '/')
-  const client = createClient(remoteUrl ? { url: remoteUrl, authToken: token } : { url: `file:${path}` })
+  // Turso's serverless client uses HTTPS/fetch, which is suited to Vercel
+  // Functions. Keep libSQL's file client for local development.
+  const client = remoteUrl
+    ? createRemoteClient({ url: remoteUrl, authToken: token })
+    : createLocalClient({ url: `file:${path}` })
   try {
     try {
       await client.execute('SELECT id FROM auth_user LIMIT 1')
