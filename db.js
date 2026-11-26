@@ -10,6 +10,11 @@ export async function getDatabase() {
   return database
 }
 
+function inDatabasePhase(phase, error) {
+  if (typeof error === 'object' && error && !error.phase) error.phase = phase
+  return error
+}
+
 async function connect() {
   const remoteUrl = process.env.TURSO_DATABASE_URL
   const token = process.env.TURSO_AUTH_TOKEN
@@ -20,8 +25,13 @@ async function connect() {
   const path = resolve(process.env.LOCAL_DB_PATH || 'control.local.sqlite3').replaceAll('\\', '/')
   const client = createClient(remoteUrl ? { url: remoteUrl, authToken: token } : { url: `file:${path}` })
   try {
-    await client.execute('SELECT id FROM auth_user LIMIT 1')
-    await client.batch([
+    try {
+      await client.execute('SELECT id FROM auth_user LIMIT 1')
+    } catch (error) {
+      throw inDatabasePhase('database.healthcheck', error)
+    }
+    try {
+      await client.batch([
       `CREATE TABLE IF NOT EXISTS control_session (
         token_hash TEXT PRIMARY KEY, user_id INTEGER NOT NULL, expires_at INTEGER NOT NULL
       )`,
@@ -33,7 +43,10 @@ async function connect() {
         empresa_id INTEGER NOT NULL, request_id TEXT NOT NULL, venta_id INTEGER NOT NULL,
         PRIMARY KEY (empresa_id, request_id)
       )`,
-    ], 'write')
+      ], 'write')
+    } catch (error) {
+      throw inDatabasePhase('database.bootstrap', error)
+    }
     return client
   } catch (error) {
     client.close()
