@@ -86,6 +86,13 @@ function safeErrorDetails(error) {
     if (typeof value === 'string' && /^[A-Z0-9_-]{1,80}$/i.test(value)) details[key] = value
   }
   if (typeof error?.phase === 'string' && /^[a-z.]{1,80}$/.test(error.phase)) details.phase = error.phase
+  // The health check has a fixed query and contains no request values. Turso
+  // reports the useful SQLite cause in its message, while SQLITE_UNKNOWN alone
+  // is too broad to diagnose. Keep all other database messages out of logs.
+  const message = typeof error?.message === 'string' ? error.message : ''
+  if (error?.phase === 'database.healthcheck' && /^SQLite error:/i.test(message) && message.length <= 240) {
+    details.databaseError = message
+  }
   return details
 }
 
