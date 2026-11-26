@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react'
 import { ClipboardList, Download, X } from 'lucide-react'
-import { dateLabel, money, salesCsv, salesReport } from './data'
+import { dateLabel, limaToday, money, salesCsv, salesReport } from './data'
 
 export async function api(path, { method = 'GET', body = {}, company, signal } = {}) {
   const query = company ? '?empresa=' + encodeURIComponent(company) : ''
@@ -70,6 +70,7 @@ function formFor(mode, row, data) {
         title: 'Registrar venta', endpoint: 'ventas', fields: [
           field('producto_id', 'Producto', 'select', { choices: [['', 'Selecciona un producto'], ...data.products.filter(product => product.activo && product.stock_actual > 0).map(product => [product.id, `${product.nombre} · ${product.stock_actual} en stock`])] }),
           quantity('cantidad', 'Cantidad', { min: 1, value: 1 }),
+          field('fecha', 'Fecha de venta', 'date', { value: limaToday(), max: limaToday() }),
           field('metodo_pago', 'Método de pago', 'select', { choices: [['EFECTIVO', 'Efectivo'], ['DIGITAL', 'Digital'], ['TARJETA', 'Tarjeta']] }),
         ],
       }

@@ -43,15 +43,30 @@ export async function snapshot(db, user, { companies, active }) {
   return { ...data, companies, company: active || null, user, users }
 }
 
-async function stockMovement(tx, { type, quantity, cost, stock, product, sale = null, company }) {
+async function stockMovement(tx, { type, quantity, cost, stock, product, sale = null, company, date = now() }) {
   await execute(tx, `INSERT INTO operaciones_kardex
     (tipo_movimiento,cantidad,costo_unitario,stock_resultante,producto_id,venta_id,empresa_id,es_simulado,fecha)
-    VALUES (?,?,?,?,?,?,?,0,?)`, type, quantity, cost, stock, product, sale, company, now())
+    VALUES (?,?,?,?,?,?,?,0,?)`, type, quantity, cost, stock, product, sale, company, date)
+}
+
+function saleTimestamp(value) {
+  if (value == null || value === '') return now()
+  const date = text(value, 'fecha de venta', 10)
+  const parsed = new Date(date + 'T00:00:00Z')
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !Number.isFinite(+parsed) || parsed.toISOString().slice(0, 10) !== date) {
+    fail(400, 'Selecciona una fecha de venta válida.')
+  }
+  const today = new Intl.DateTimeFormat('sv-SE', { timeZone: 'America/Lima' }).format()
+  if (date > today) fail(400, 'La fecha de venta no puede ser futura.')
+  // Stored SQLite timestamps are interpreted as UTC by reporting functions.
+  // Noon preserves the day selected in Lima through UTC conversion.
+  return `${date} 12:00:00`
 }
 
 export async function sell(db, company, body) {
   const productId = id(body.producto_id)
   const quantity = number(body.cantidad, 'cantidad', { min: 1, max: 10000 })
+  const date = saleTimestamp(body.fecha)
   const payment = body.metodo_pago || 'EFECTIVO'
   if (!['EFECTIVO', 'DIGITAL', 'TARJETA'].includes(payment)) fail(400, 'Selecciona un método de pago válido.')
   if (typeof body.request_id !== 'string' || !/^[a-f\d-]{36}$/i.test(body.request_id)) fail(400, 'Solicitud de venta inválida.')
@@ -70,12 +85,12 @@ export async function sell(db, company, body) {
       FROM operaciones_venta WHERE empresa_id=? AND numero_ticket GLOB 'B001-[0-9]*'`, company)
     const ticket = 'B001-' + String((sequence.last || 0) + 1).padStart(8, '0')
     const created = await execute(tx, `INSERT INTO operaciones_venta
-      (numero_ticket,total,metodo_pago,empresa_id,es_simulado,fecha) VALUES (?,?,?,?,0,?)`, ticket, total, payment, company, now())
+      (numero_ticket,total,metodo_pago,empresa_id,es_simulado,fecha) VALUES (?,?,?,?,0,?)`, ticket, total, payment, company, date)
     const sale = Number(created.lastInsertRowid)
     await execute(tx, `INSERT INTO operaciones_detalleventa
       (producto_id,venta_id,cantidad,precio_unitario) VALUES (?,?,?,?)`, productId, sale, quantity, product.precio_venta)
     await execute(tx, 'UPDATE inventario_producto SET stock_actual=? WHERE id=? AND empresa_id=?', stock, productId, company)
-    await stockMovement(tx, { type: 'SALIDA_VENTA', quantity, cost: product.costo_promedio, stock, product: productId, sale, company })
+    await stockMovement(tx, { type: 'SALIDA_VENTA', quantity, cost: product.costo_promedio, stock, product: productId, sale, company, date })
     await execute(tx, 'INSERT INTO control_sale_request (empresa_id,request_id,venta_id) VALUES (?,?,?)', company, body.request_id, sale)
     return { id: sale, numero_ticket: ticket, total }
   })
