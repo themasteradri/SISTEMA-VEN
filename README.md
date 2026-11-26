@@ -23,3 +23,7 @@ Vite ejecuta localmente el mismo manejador de `api/handler.js` que usa Vercel. E
 3. Verifica acceso, permisos y una venta de prueba con una base de pruebas antes de usar la base principal. El primer arranque de la API crea las tablas de sesión y control de duplicados.
 
 Los archivos SQLite y los secretos se excluyen del repositorio y del despliegue. Las boletas son comprobantes internos en PDF.
+
+## Registro de cuentas
+
+La pantalla de inicio permite crear una cuenta. Cada registro crea una empresa asociada y una sesión para el nuevo usuario. Las cuentas creadas de esta forma quedan activas como usuarios normales; solo un superusuario puede administrar usuarios o acceder a todas las empresas.

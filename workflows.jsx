@@ -14,15 +14,20 @@ export async function api(path, { method = 'GET', body = {}, company, signal } =
 }
 
 export function Login({ onLogin }) {
+  const [registering, setRegistering] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   async function enter(event) {
     event.preventDefault()
     const values = Object.fromEntries(new FormData(event.currentTarget))
+    if (registering && values.password !== values.confirmation) {
+      setError('Las contraseñas no coinciden.')
+      return
+    }
     setBusy(true)
     setError('')
     try {
-      await api('login', { method: 'POST', body: values })
+      await api(registering ? 'register' : 'login', { method: 'POST', body: values })
       onLogin()
     } catch (failure) {
       setError(failure.message)
@@ -30,14 +35,26 @@ export function Login({ onLogin }) {
       setBusy(false)
     }
   }
+  function toggle() {
+    setRegistering(value => !value)
+    setError('')
+  }
   return <main className="login-page"><form className="panel login-panel" onSubmit={enter}>
     <span className="brand-mark"><ClipboardList size={23} /></span>
-    <h1>Iniciar sesión</h1>
-    <p>Control · Sistema de ventas</p>
+    <h1>{registering ? 'Crear cuenta' : 'Iniciar sesión'}</h1>
+    <p>{registering ? 'Crea tu cuenta y empresa para empezar.' : 'Control · Sistema de ventas'}</p>
     <label>Usuario<input name="username" autoComplete="username" required autoFocus /></label>
-    <label>Contraseña<input name="password" type="password" autoComplete="current-password" required /></label>
+    {registering && <>
+      <label>Nombre<input name="first_name" autoComplete="given-name" required /></label>
+      <label>Apellido<input name="last_name" autoComplete="family-name" /></label>
+      <label>Correo<input name="email" type="email" autoComplete="email" /></label>
+      <label>Empresa o negocio<input name="empresa" autoComplete="organization" required /></label>
+    </>}
+    <label>Contraseña<input name="password" type="password" autoComplete={registering ? 'new-password' : 'current-password'} minLength={registering ? 10 : undefined} required /></label>
+    {registering && <label>Confirmar contraseña<input name="confirmation" type="password" autoComplete="new-password" minLength="10" required /></label>}
     {error && <p className="error" role="alert">{error}</p>}
-    <button className="primary" disabled={busy}>{busy ? 'Ingresando…' : 'Ingresar'}</button>
+    <button className="primary" disabled={busy}>{busy ? (registering ? 'Creando…' : 'Ingresando…') : (registering ? 'Crear cuenta' : 'Ingresar')}</button>
+    <button type="button" className="text-button" onClick={toggle} disabled={busy}>{registering ? 'Ya tengo una cuenta' : '¿No tienes cuenta? Regístrate'}</button>
   </form></main>
 }
 

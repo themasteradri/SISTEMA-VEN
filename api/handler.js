@@ -1,5 +1,5 @@
 import { getDatabase, fail, id } from '../db.js'
-import { changePassword, login, logout, userFor, verifyCurrent } from '../auth.js'
+import { changePassword, login, logout, register, userFor, verifyCurrent } from '../auth.js'
 import { adjustStock, bulkInventory, removeProduct, removeUser, resetCompany, saveCompany, saveExpense, saveProduct, saveUser, scope, sell, snapshot } from '../operations.js'
 
 function checkOrigin(request) {
@@ -50,6 +50,7 @@ async function dispatch(request, response) {
   const body = mutation ? await jsonBody(request) : {}
   const db = await inPhase('database.connect', getDatabase)
   if (action === 'POST login') return inPhase('login', () => login(db, request, response, body))
+  if (action === 'POST register') return inPhase('register', () => register(db, request, response, body))
   if (action === 'POST logout') return inPhase('logout', () => logout(db, request, response))
   const user = await inPhase('session.user', () => userFor(db, request))
   if (action === 'GET session') return { user }

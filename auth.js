@@ -11,6 +11,20 @@ const digest = value => createHash('sha256').update(value).digest('hex')
 const epoch = () => Math.floor(Date.now() / 1000)
 const privateFields = 'u.id, u.username, u.first_name, u.last_name, u.email, u.is_staff, u.is_superuser, u.is_active, p.empresa_id'
 
+function clientIp(request) {
+  const value = process.env.VERCEL ? request.headers['x-vercel-forwarded-for'] : request.socket?.remoteAddress
+  return String(value || 'unknown').split(',')[0]
+}
+
+async function rateLimit(db, key, timestamp, maximum) {
+  const limit = await first(db, `INSERT INTO control_login_rate (ip, window_start, attempts) VALUES (?, ?, 1)
+    ON CONFLICT(ip) DO UPDATE SET
+      attempts=CASE WHEN window_start <= ? THEN 1 ELSE attempts+1 END,
+      window_start=CASE WHEN window_start <= ? THEN excluded.window_start ELSE window_start END
+    RETURNING attempts`, key, timestamp, timestamp - 900, timestamp - 900)
+  if (limit.attempts > maximum) fail(429, 'Demasiados intentos. Intenta nuevamente en unos minutos.')
+}
+
 function readToken(request) {
   const entry = (request.headers.cookie || '').split(';').map(part => part.trim()).find(part => part.startsWith(cookieName + '='))
   const token = entry?.slice(cookieName.length + 1)
@@ -47,14 +61,7 @@ export async function login(db, request, response, body) {
   const username = text(body.username, 'usuario', 150)
   const password = passwordInput(body.password, false)
   const timestamp = epoch()
-  const ip = process.env.VERCEL ? request.headers['x-vercel-forwarded-for'] : request.socket?.remoteAddress
-  const key = digest(String(ip || 'unknown').split(',')[0])
-  const limit = await first(db, `INSERT INTO control_login_rate (ip, window_start, attempts) VALUES (?, ?, 1)
-    ON CONFLICT(ip) DO UPDATE SET
-      attempts=CASE WHEN window_start <= ? THEN 1 ELSE attempts+1 END,
-      window_start=CASE WHEN window_start <= ? THEN excluded.window_start ELSE window_start END
-    RETURNING attempts`, key, timestamp, timestamp - 900, timestamp - 900)
-  if (limit.attempts > 30) fail(429, 'Demasiados intentos. Intenta nuevamente en unos minutos.')
+  await rateLimit(db, digest(clientIp(request)), timestamp, 30)
   const user = await first(db, 'SELECT id,password,is_active FROM auth_user WHERE username=?', username)
   const verified = await matches(password, user?.password)
   if (!verified || !user?.is_active) fail(401, 'Usuario o contraseña incorrectos.')
@@ -66,6 +73,39 @@ export async function login(db, request, response, body) {
     await execute(tx, 'DELETE FROM control_login_rate WHERE window_start <= ?', timestamp - 900)
     await execute(tx, 'INSERT INTO control_session VALUES (?,?,?)', digest(token), user.id, timestamp + duration)
     await execute(tx, 'UPDATE auth_user SET last_login=? WHERE id=?', now(), user.id)
+  })
+  response.setHeader('Set-Cookie', cookie(token, duration))
+  return { ok: true }
+}
+
+export async function register(db, request, response, body) {
+  const username = text(body.username, 'usuario', 150)
+  const firstName = text(body.first_name, 'nombre', 150)
+  const lastName = text(body.last_name, 'apellido', 150, false)
+  const email = text(body.email, 'correo', 254, false)
+  const companyName = text(body.empresa, 'empresa', 150)
+  const password = passwordInput(body.password, true)
+  if (body.confirmation !== password) fail(400, 'Las contraseñas no coinciden.')
+  const timestamp = epoch()
+  await rateLimit(db, digest(`register:${clientIp(request)}`), timestamp, 5)
+  const hash = await passwordHash(password)
+  const token = randomBytes(32).toString('base64url')
+  await write(db, async tx => {
+    if (await first(tx, 'SELECT id FROM auth_user WHERE username=?', username)) fail(409, 'El usuario, correo o empresa ya está registrado.')
+    if (email && await first(tx, 'SELECT id FROM auth_user WHERE email=?', email)) fail(409, 'El usuario, correo o empresa ya está registrado.')
+    if (await first(tx, 'SELECT id FROM empresas_empresa WHERE nombre=?', companyName)) fail(409, 'El usuario, correo o empresa ya está registrado.')
+    const company = await execute(tx, `INSERT INTO empresas_empresa (nombre,ruc,direccion,telefono,fecha_registro)
+      VALUES (?, '', '', '', ?)`, companyName, now())
+    const user = await execute(tx, `INSERT INTO auth_user (username,first_name,last_name,email,
+      is_staff,is_superuser,is_active,password,date_joined) VALUES (?,?,?,?,0,0,1,?,?)`,
+    username, firstName, lastName, email, hash, now())
+    const userId = Number(user.lastInsertRowid)
+    await execute(tx, 'INSERT INTO empresas_perfilusuario (user_id,empresa_id) VALUES (?,?)', userId, Number(company.lastInsertRowid))
+    const previous = readToken(request)
+    if (previous) await execute(tx, 'DELETE FROM control_session WHERE token_hash=?', previous)
+    await execute(tx, 'DELETE FROM control_session WHERE expires_at <= ?', timestamp)
+    await execute(tx, 'DELETE FROM control_login_rate WHERE window_start <= ?', timestamp - 900)
+    await execute(tx, 'INSERT INTO control_session VALUES (?,?,?)', digest(token), userId, timestamp + duration)
   })
   response.setHeader('Set-Cookie', cookie(token, duration))
   return { ok: true }
