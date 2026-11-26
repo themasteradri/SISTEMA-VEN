@@ -29,6 +29,15 @@ async function jsonBody(request) {
   return body
 }
 
+async function inPhase(phase, operation) {
+  try {
+    return await operation()
+  } catch (error) {
+    if (typeof error === 'object' && error && !error.phase) error.phase = phase
+    throw error
+  }
+}
+
 async function dispatch(request, response) {
   const url = new URL(request.url, 'http://localhost')
   const route = url.pathname === '/api/handler'
@@ -39,20 +48,20 @@ async function dispatch(request, response) {
   const mutation = request.method !== 'GET'
   if (mutation) checkOrigin(request)
   const body = mutation ? await jsonBody(request) : {}
-  const db = await getDatabase()
-  if (action === 'POST login') return login(db, request, response, body)
-  if (action === 'POST logout') return logout(db, request, response)
-  const user = await userFor(db, request)
+  const db = await inPhase('database.connect', getDatabase)
+  if (action === 'POST login') return inPhase('login', () => login(db, request, response, body))
+  if (action === 'POST logout') return inPhase('logout', () => logout(db, request, response))
+  const user = await inPhase('session.user', () => userFor(db, request))
   if (action === 'GET session') return { user }
-  if (action === 'POST password') return changePassword(db, user, body)
+  if (action === 'POST password') return inPhase('password.change', () => changePassword(db, user, body))
   if (route === 'usuarios') {
     if (!user.is_superuser) fail(403, 'Se requiere acceso de superusuario.')
     if (action === 'POST usuarios') return saveUser(db, user, body)
     if (action === 'PATCH usuarios') return saveUser(db, user, body, id(body.id))
     if (action === 'DELETE usuarios') return removeUser(db, user, id(body.id))
   }
-  const scoped = await scope(db, user, url.searchParams.get('empresa') || request.query?.empresa)
-  if (action === 'GET datos') return snapshot(db, user, scoped)
+  const scoped = await inPhase('company.scope', () => scope(db, user, url.searchParams.get('empresa') || request.query?.empresa))
+  if (action === 'GET datos') return inPhase('datos.snapshot', () => snapshot(db, user, scoped))
   if (!scoped.active) fail(403, 'No tienes una empresa asignada.')
   const company = scoped.active.id
   switch (action) {
@@ -76,6 +85,7 @@ function safeErrorDetails(error) {
   for (const [key, value] of [['code', error?.code], ['causeCode', error?.cause?.code]]) {
     if (typeof value === 'string' && /^[A-Z0-9_-]{1,80}$/i.test(value)) details[key] = value
   }
+  if (typeof error?.phase === 'string' && /^[a-z.]{1,80}$/.test(error.phase)) details.phase = error.phase
   return details
 }
 
