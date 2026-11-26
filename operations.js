@@ -40,6 +40,9 @@ export async function snapshot(db, user, { companies, active }) {
   const results = active ? await db.batch(queries.map(([, sql]) => stmt(sql, active.id)), 'deferred') : []
   const data = Object.fromEntries(queries.map(([key], index) => [key, results[index]?.rows || []]))
   const users = user.is_superuser ? await userList(db) : []
+  if (user.is_superuser && process.env.VERCEL) {
+    console.info('Snapshot administrativo', JSON.stringify({ companies: companies.length, users: users.length, activeCompany: Boolean(active) }))
+  }
   if (user.is_superuser && (!companies.length || !users.length)) {
     console.warn('Datos administrativos incompletos', JSON.stringify({ companies: companies.length, users: users.length, activeCompany: Boolean(active) }))
   }
