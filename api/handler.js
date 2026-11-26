@@ -69,6 +69,16 @@ async function dispatch(request, response) {
   }
 }
 
+function safeErrorDetails(error) {
+  const details = { name: typeof error?.name === 'string' ? error.name : 'Error' }
+  // libSQL exposes stable error codes that are useful for diagnosis. Do not log
+  // error.message or stack: either can contain request data or connection URLs.
+  for (const [key, value] of [['code', error?.code], ['causeCode', error?.cause?.code]]) {
+    if (typeof value === 'string' && /^[A-Z0-9_-]{1,80}$/i.test(value)) details[key] = value
+  }
+  return details
+}
+
 export default async function handler(request, response) {
   response.setHeader('Content-Type', 'application/json; charset=utf-8')
   response.setHeader('Cache-Control', 'no-store')
@@ -79,7 +89,10 @@ export default async function handler(request, response) {
     response.end(JSON.stringify(data))
   } catch (error) {
     const status = Number.isInteger(error.status) ? error.status : 500
-    if (status === 500) console.error('Error de API', error.code || error.name)
+    if (status === 500) {
+      const route = String(request.query?.route || new URL(request.url, 'http://localhost').pathname.replace(/^\/api\//, ''))
+      console.error('Error de API', JSON.stringify({ route, method: request.method, ...safeErrorDetails(error) }))
+    }
     response.statusCode = status
     response.end(JSON.stringify({ error: status === 500 ? 'No se pudo completar la operación.' : error.message }))
   }

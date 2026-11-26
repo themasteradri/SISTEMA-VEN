@@ -34,7 +34,10 @@ const scopedQueries = {
 
 export async function snapshot(db, user, { companies, active }) {
   const queries = Object.entries(scopedQueries)
-  const results = active ? await db.batch(queries.map(([, sql]) => stmt(sql, active.id)), 'read') : []
+  // `read` becomes `BEGIN TRANSACTION READONLY`, which is not accepted by every
+  // Turso/libSQL version. A deferred batch is portable and sufficient here: the
+  // snapshot only reads data and does not need a write lock.
+  const results = active ? await db.batch(queries.map(([, sql]) => stmt(sql, active.id)), 'deferred') : []
   const data = Object.fromEntries(queries.map(([key], index) => [key, results[index]?.rows || []]))
   return { ...data, companies, company: active || null, user, users: user.is_superuser ? await userList(db) : [] }
 }
