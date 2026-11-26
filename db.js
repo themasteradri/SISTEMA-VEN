@@ -61,7 +61,13 @@ async function connect() {
 
 export const stmt = (sql, ...args) => ({ sql, args })
 export const execute = (db, sql, ...args) => db.execute(stmt(sql, ...args))
-export const rows = async (db, sql, ...args) => (await execute(db, sql, ...args)).rows
+export function resultRows(result) {
+  const columns = result.columns || []
+  return (result.rows || []).map(row => Array.isArray(row)
+    ? Object.fromEntries(columns.map((column, index) => [column, row[index]]))
+    : row)
+}
+export const rows = async (db, sql, ...args) => resultRows(await execute(db, sql, ...args))
 export const first = async (db, sql, ...args) => (await rows(db, sql, ...args))[0]
 
 // SQLite allows one writer at a time. libSQL also takes a write lock on Turso.

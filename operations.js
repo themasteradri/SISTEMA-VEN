@@ -1,4 +1,4 @@
-import { execute, fail, first, id, now, number, rows, stmt, text, write } from './db.js'
+import { execute, fail, first, id, now, number, resultRows, rows, stmt, text, write } from './db.js'
 import { passwordHash, userList } from './auth.js'
 
 export async function scope(db, user, company) {
@@ -38,14 +38,8 @@ export async function snapshot(db, user, { companies, active }) {
   // Turso/libSQL version. A deferred batch is portable and sufficient here: the
   // snapshot only reads data and does not need a write lock.
   const results = active ? await db.batch(queries.map(([, sql]) => stmt(sql, active.id)), 'deferred') : []
-  const data = Object.fromEntries(queries.map(([key], index) => [key, results[index]?.rows || []]))
+  const data = Object.fromEntries(queries.map(([key], index) => [key, results[index] ? resultRows(results[index]) : []]))
   const users = user.is_superuser ? await userList(db) : []
-  if (user.is_superuser && process.env.VERCEL) {
-    console.info('Snapshot administrativo', JSON.stringify({ companies: companies.length, users: users.length, activeCompany: Boolean(active) }))
-  }
-  if (user.is_superuser && (!companies.length || !users.length)) {
-    console.warn('Datos administrativos incompletos', JSON.stringify({ companies: companies.length, users: users.length, activeCompany: Boolean(active) }))
-  }
   return { ...data, companies, company: active || null, user, users }
 }
 
